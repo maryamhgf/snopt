@@ -1,5 +1,8 @@
 import numpy as np
 import torch
+import os
+from torchvision import transforms as T
+
 
 from torchvision import transforms
 from prefetch_generator import BackgroundGenerator
@@ -116,28 +119,101 @@ def get_tabular_loader(opt, test_batch_size=1000):
 
     return train_loader, test_loader
 
+def generate_dataloader_ImageNet(data, name, batch_size, transform):
+    if data is None: 
+        return None
+    
+    # Read image files to pytorch dataset using ImageFolder, a generic data 
+    # loader where images are in format root/label/filename
+    # See https://pytorch.org/vision/stable/datasets.html
+    if transform is None:
+        dataset = datasets.ImageFolder(data, transform=T.ToTensor())
+    else:
+        dataset = datasets.ImageFolder(data, transform=transform)
+
+    # Set options for device
+    if use_cuda:
+        kwargs = {"pin_memory": True, "num_workers": 1}
+    else:
+        kwargs = {}
+    
+    # Wrap image dataset (defined above) in dataloader 
+    dataloader = DataLoader(dataset, batch_size=batch_size, 
+                        shuffle=(name=="train"), 
+                        **kwargs)
+    
+    return dataloader
 
 def get_img_loader(opt, test_batch_size=1000):
     print(util.magenta("loading image data..."))
+    if(opt.problem == "tinyImageNet"):
+        #run !wget http://cs231n.stanford.edu/tiny-imagenet-200.zip first to download data to your local macine.
+        #run !unzip -qq 'tiny-imagenet-200.zip' to unzip the data.
+        # Define main data directory
+        DATA_DIR = 'tiny-imagenet-200' # Original images come in shapes of [3,64,64]
 
-    dataset_builder, root, input_dim, output_dim = {
-        'mnist':   [torch_data.MNIST,  'data/img/mnist',  [1,28,28], 10],
-        'SVHN':    [torch_data.SVHN,   'data/img/svhn',   [3,32,32], 10],
-        'cifar10': [torch_data.CIFAR10,'data/img/cifar10',[3,32,32], 10],
-    }.get(opt.problem)
-    opt.input_dim = input_dim
-    opt.output_dim = output_dim
+        # Define training and validation data paths
+        TRAIN_DIR = os.path.join(DATA_DIR, 'train') 
+        VALID_DIR = os.path.join(DATA_DIR, 'val')
+        val_img_dir = os.path.join(VALID_DIR, 'images')
 
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,)),
-    ])
-    feed_dict = dict(download=True, root=root, transform=transform)
-    train_dataset = dataset_builder(**feed_dict) if opt.problem=='SVHN' else dataset_builder(train=True, **feed_dict)
-    test_dataset  = dataset_builder(**feed_dict) if opt.problem=='SVHN' else dataset_builder(train=False, **feed_dict)
+        # Open and read val annotations text file
+        fp = open(os.path.join(VALID_DIR, 'val_annotations.txt'), 'r')
+        data = fp.readlines()
 
-    feed_dict = dict(num_workers=2, drop_last=True)
-    train_loader = DataLoaderX(train_dataset, batch_size=opt.batch_size, shuffle=True, **feed_dict)
-    test_loader  = DataLoaderX(test_dataset, batch_size=test_batch_size, shuffle=False, **feed_dict)
+        # Create dictionary to store img filename (word 0) and corresponding
+        # label (word 1) for every line in the txt file (as key value pair)
+        val_img_dict = {}
+        for line in data:
+            words = line.split('\t')
+            val_img_dict[words[0]] = words[1]
+        fp.close()
+        
+        for img, folder in val_img_dict.items():
+            newpath = (os.path.join(val_img_dir, folder))
+            if not os.path.exists(newpath):
+                os.makedirs(newpath)
+            if os.path.exists(os.path.join(val_img_dir, img)):
+                os.rename(os.path.join(val_img_dir, img), os.path.join(newpath, img))
+        preprocess_transform = T.Compose([
+                        T.Resize(256), # Resize images to 256 x 256
+                        T.CenterCrop(224), # Center crop image
+                        T.RandomHorizontalFlip(),
+                        T.ToTensor(),  # Converting cropped images to tensors
+                        T.Normalize(mean=[0.485, 0.456, 0.406], 
+                                    std=[0.229, 0.224, 0.225])
+        ])
+        # Define batch size for DataLoaders
+
+        # Create DataLoaders for pre-trained models (normalized based on specific requirements)
+        train_loader = generate_dataloader_ImageNet(TRAIN_DIR, "train", opt.batch_size,
+                                        transform=preprocess_transform)
+
+        test_loader = generate_dataloader_ImageNet(val_img_dir, "val", test_batch_size,
+                                        transform=preprocess_transform)
+        opt.input_dim = [3, 64, 64]
+        opt.output_dim = 200       
+
+    else:
+        dataset_builder, root, input_dim, output_dim = {
+            'mnist':   [torch_data.MNIST,  'data/img/mnist',  [1,28,28], 10],
+            'SVHN':    [torch_data.SVHN,   'data/img/svhn',   [3,32,32], 10],
+            'cifar10': [torch_data.CIFAR10,'data/img/cifar10',[3,32,32], 10],
+            'cifar100': [torch_data.CIFAR100,'data/img/cifar100',[3,32,32], 100],
+        }.get(opt.problem)
+        opt.input_dim = input_dim
+        opt.output_dim = output_dim
+
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,)),
+        ])
+        feed_dict = dict(download=True, root=root, transform=transform)
+        train_dataset = dataset_builder(**feed_dict) if opt.problem=='SVHN' else dataset_builder(train=True, **feed_dict)
+        test_dataset  = dataset_builder(**feed_dict) if opt.problem=='SVHN' else dataset_builder(train=False, **feed_dict)
+
+        feed_dict = dict(num_workers=2, drop_last=True)
+        train_loader = DataLoaderX(train_dataset, batch_size=opt.batch_size, shuffle=True, **feed_dict)
+        test_loader  = DataLoaderX(test_dataset, batch_size=test_batch_size, shuffle=False, **feed_dict)
 
     return train_loader, test_loader
